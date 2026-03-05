@@ -28,7 +28,7 @@ llm = ChatOpenAI(
 # === Промпт ===
 prompt = ChatPromptTemplate.from_messages([
     ("system", """
-Ты — аналитик требований. Пользователь описывает идею приложения простыми словами.
+Ты — дотошный аналитик требований. Пользователь описывает идею приложения простыми словами.
 Если информации недостаточно для заполнения всех полей (цель, функции, аудитория, особые условия),
 задай **один конкретный уточняющий вопрос**.
 
@@ -82,13 +82,43 @@ def validate_and_convert(data: dict) -> Requirements | None:
         return Requirements(**normalized)
     except (ValidationError, KeyError, TypeError):
         return None
+    
+def sanitize_filename(name: str) -> str:
+    """Преобразует название в безопасное имя папки."""
+    name = name.lower()
+    name = re.sub(r'[^\w\s-]', '', name)
+    name = re.sub(r'[\s_-]+', '_', name)
+    name = name.strip('_')
+    return name[:50]  # Ограничение длины
 
-def save_requirements_to_file(req: Requirements):
+def save_requirements_to_project(req: Requirements, project_name: str):
+    """Сохраняет требования в папку проекта."""
+    # Создать имя папки из названия проекта
+    folder_name = sanitize_filename(project_name)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"requirements_{timestamp}.json"
-    with open(filename, "w", encoding="utf-8") as f:
+    folder_name = f"{timestamp}_{folder_name}"
+    
+    project_path = os.path.join("projects", folder_name)
+    os.makedirs(project_path, exist_ok=True)
+    
+    # Сохранить требования
+    requirements_file = os.path.join(project_path, "requirements.json")
+    with open(requirements_file, "w", encoding="utf-8") as f:
         json.dump(req.model_dump(), f, ensure_ascii=False, indent=2)
-    print(f"\nТребования сохранены в файл: {filename}")
+    
+    # Создать файл метаданных
+    metadata = {
+        "project_name": project_name,
+        "created_at": datetime.now().isoformat(),
+        "folder_name": folder_name
+    }
+    metadata_file = os.path.join(project_path, "metadata.json")
+    with open(metadata_file, "w", encoding="utf-8") as f:
+        json.dump(metadata, f, ensure_ascii=False, indent=2)
+    
+    print(f"\n📁 Требования сохранены в: {project_path}")
+    print(f"   Файл: {requirements_file}")
+    return project_path
 
 def main():
     print("Привет! Опишите идею вашего приложения простыми словами.")
@@ -140,21 +170,26 @@ def main():
         print(f"- Аудитория: {req.audience}")
         print(f"- Особые требования: {req.special_requirements}")
 
+        # === Сохранение ===
+        print("\n💾 Сохранение проекта...")
+        project_name = input("Введите название проекта: ").strip()
+        if not project_name:
+            project_name = req.goal[:50]  # Берём первые 50 символов цели
+        
+        project_path = save_requirements_to_project(req, project_name)
+
         # === Меню действий ===
         while True:
             print("\nЧто дальше?")
-            print("1. Сохранить в файл")
-            print("2. Начать заново")
-            print("3. Выйти")
-            choice = input("Выберите опцию (1/2/3): ").strip()
+            print("1. Начать новый проект")
+            print("2. Выйти")
+            choice = input("Выберите опцию (1/2): ").strip()
 
             if choice == "1":
-                save_requirements_to_file(req)
-            elif choice == "2":
                 chat_history = []
-                print("\n🔄 Начинаем новую сессию!")
+                print("\n🔄 Начинаем новый проект!")
                 break
-            elif choice == "3":
+            elif choice == "2":
                 print("До свидания!")
                 return
             else:
