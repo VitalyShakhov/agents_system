@@ -5,63 +5,22 @@ from datetime import datetime
 from dotenv import load_dotenv
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.messages import HumanMessage, AIMessage
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import ValidationError
 from langchain_openai import ChatOpenAI
+from models import Requirements
+from prompts import requirements_prompt_str
+from agent_utils import extract_json_from_text, get_llm, sanitize_filename
 
 load_dotenv()
 
-# === Модель требований ===
-class Requirements(BaseModel):
-    goal: str = Field(description="Цель приложения")
-    features: list[str] = Field(description="Список основных функций")
-    audience: str = Field(description="Целевая аудитория")
-    special_requirements: str = Field(description="Особые условия")
+llm = get_llm(0.3)
 
-# === Инициализация модели ===
-llm = ChatOpenAI(
-    model="deepseek-chat",
-    api_key=os.getenv("DEEPSEEK_API_KEY"),
-    base_url="https://api.deepseek.com",
-    temperature=0.3
-)
-
-# === Промпт ===
 prompt = ChatPromptTemplate.from_messages([
-    ("system", """
-Ты — дотошный аналитик требований. Пользователь описывает идею приложения простыми словами.
-Если информации недостаточно для заполнения всех полей (цель, функции, аудитория, особые условия),
-задай **один конкретный уточняющий вопрос**.
-
-Если информации достаточно — **выведи ТОЛЬКО ЧИСТЫЙ JSON в формате**:
-{{
-  "goal": "...",
-  "features": ["...", "..."],
-  "audience": "...",
-  "special_requirements": "..."
-}}
-
-Без пояснений, без markdown, без ```json — только валидный JSON.
-"""),
+    ("system", requirements_prompt_str),
     MessagesPlaceholder(variable_name="chat_history"),
 ])
 
 chat_chain = prompt | llm
-
-def extract_json_from_text(text: str) -> dict | None:
-    """Пытается извлечь JSON из текста (даже если он в блоках ```json)."""
-    # Удаляем markdown-блоки
-    text = re.sub(r"```(?:json)?\s*", "", text)
-    text = re.sub(r"```", "", text)
-    try:
-        # Ищем первую фигурную скобку до последней
-        start = text.find("{")
-        end = text.rfind("}")
-        if start != -1 and end != -1 and end > start:
-            json_str = text[start:end+1]
-            return json.loads(json_str)
-    except (json.JSONDecodeError, ValueError):
-        return None
-    return None
 
 def validate_and_convert(data: dict) -> Requirements | None:
     """Преобразует словарь в Requirements, обрабатывая возможные расхождения в ключах."""
@@ -82,14 +41,6 @@ def validate_and_convert(data: dict) -> Requirements | None:
         return Requirements(**normalized)
     except (ValidationError, KeyError, TypeError):
         return None
-    
-def sanitize_filename(name: str) -> str:
-    """Преобразует название в безопасное имя папки."""
-    name = name.lower()
-    name = re.sub(r'[^\w\s-]', '', name)
-    name = re.sub(r'[\s_-]+', '_', name)
-    name = name.strip('_')
-    return name[:50]  # Ограничение длины
 
 def save_requirements_to_project(req: Requirements, project_name: str):
     """Сохраняет требования в папку проекта."""

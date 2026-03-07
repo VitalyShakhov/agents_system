@@ -1,6 +1,5 @@
 import os
 import json
-import re
 from datetime import datetime
 from typing import List, Dict, Optional
 from enum import Enum
@@ -8,27 +7,11 @@ from dotenv import load_dotenv
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 from langchain_openai import ChatOpenAI
+from models import Requirements, TechStackRecommendation as TechStack
+from prompts import task_generation_prompt_str
+from agent_utils import extract_json_from_text, get_llm
 
 load_dotenv()
-
-# === Модель требований (вход от первого агента) ===
-class Requirements(BaseModel):
-    goal: str = Field(description="Цель приложения")
-    features: List[str] = Field(description="Список основных функций")
-    audience: str = Field(description="Целевая аудитория")
-    special_requirements: str = Field(description="Особые условия")
-
-# === Модель рекомендаций по стеку (вход от второго агента) ===
-class TechStack(BaseModel):
-    language: str = Field(description="Язык программирования")
-    framework: str = Field(description="Основной фреймворк")
-    database: str = Field(description="База данных")
-    frontend: Optional[str] = Field(description="Фронтенд")
-    architecture: str = Field(description="Архитектура")
-    hosting: str = Field(description="Хостинг/деплой")
-    additional_tools: List[str] = Field(description="Доп. инструменты")
-    justification: str = Field(description="Обоснование")
-    scalability_notes: str = Field(description="Заметки о масштабируемости")
 
 # === Роли агентов ===
 class AgentRole(str, Enum):
@@ -81,49 +64,11 @@ class AgentInterface:
         raise NotImplementedError("Метод должен быть реализован в подклассе")
 
 # === Инициализация модели ===
-llm = ChatOpenAI(
-    model="deepseek-chat",
-    api_key=os.getenv("DEEPSEEK_API_KEY"),
-    base_url="https://api.deepseek.com",
-    temperature=0.5
-)
+llm = get_llm(0.5)
 
 # === Промпт для генерации задач ===
 task_generation_prompt = ChatPromptTemplate.from_messages([
-    ("system", """
-Ты — опытный технический руководитель (Tech Lead) с опытом в планировании проектов.
-Твоя задача — разбить проект на конкретные, выполнимые задачи для команды разработки.
-
-На основе требований к приложению и выбранного технологического стека создай детальный план работ.
-
-Правила:
-1. Создай 10-20 задач, покрывающих весь проект от начала до конца
-2. Каждая задача должна быть конкретной и выполнимой одним разработчиком за 1-8 часов
-3. Укажи зависимости между задачами (какие задачи должны быть выполнены раньше)
-4. Распредели задачи по ролям: {available_roles}
-5. Укажи приоритет (1-5, где 1 - критически важно)
-6. Добавь критерии приемки для каждой задачи
-
-Формат ответа — ТОЛЬКО ЧИСТЫЙ JSON:
-{{
-  "tasks": [
-    {{
-      "id": "TASK-001",
-      "title": "...",
-      "description": "...",
-      "role": "backend_developer",
-      "priority": 1,
-      "estimated_hours": 4,
-      "dependencies": [],
-      "acceptance_criteria": ["...", "..."],
-      "tags": ["...", "..."]
-    }}
-  ],
-  "milestones": ["...", "..."]
-}}
-
-Без пояснений, без markdown — только валидный JSON.
-"""),
+    ("system", task_generation_prompt_str),
     ("human", """
 Требования к приложению:
 {requirements_json}
@@ -132,22 +77,6 @@ task_generation_prompt = ChatPromptTemplate.from_messages([
 {tech_stack_json}
 """),
 ])
-
-def extract_json_from_text(text: str) -> dict | None:
-    """Извлекает JSON из текста."""
-    text = re.sub(r"```(?:json)?\s*", "", text)
-    text = re.sub(r"```", "", text)
-    print("JSON Data")
-    print(text)
-    try:
-        start = text.find("{")
-        end = text.rfind("}")
-        if start != -1 and end != -1 and end > start:
-            json_str = text[start:end+1]
-            return json.loads(json_str)
-    except (json.JSONDecodeError, ValueError):
-        return None
-    return None
 
 def load_project_data(project_path: str) -> tuple[Requirements, TechStack, dict] | None:
     """Загружает требования и стек из папки проекта."""

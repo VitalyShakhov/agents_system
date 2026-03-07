@@ -2,119 +2,36 @@ import os
 import json
 import re
 from datetime import datetime
-from typing import Optional, List
 from dotenv import load_dotenv
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.messages import HumanMessage, AIMessage
 from pydantic import BaseModel, Field, ValidationError
 from langchain_openai import ChatOpenAI
+from models import Requirements, TechStackRecommendation
+from prompts import clarification_prompt_str, stack_selection_prompt_str
+from agent_utils import extract_json_from_text, get_llm
 
 load_dotenv()
-
-# === Модель требований (вход от первого агента) ===
-class Requirements(BaseModel):
-    goal: str = Field(description="Цель приложения")
-    features: List[str] = Field(description="Список основных функций")
-    audience: str = Field(description="Целевая аудитория")
-    special_requirements: str = Field(description="Особые условия")
-
-# === Модель рекомендаций по стеку (выход) ===
-class TechStackRecommendation(BaseModel):
-    language: str = Field(description="Язык программирования")
-    framework: str = Field(description="Основной фреймворк/библиотека")
-    database: str = Field(description="База данных")
-    frontend: Optional[str] = Field(description="Фронтенд-технология (если применимо)")
-    architecture: str = Field(description="Архитектурный подход")
-    hosting: str = Field(description="Варианты хостинга/деплоя")
-    additional_tools: List[str] = Field(description="Дополнительные инструменты (тестирование, сборка и т.д.)")
-    justification: str = Field(description="Обоснование выбора стека")
-    scalability_notes: str = Field(description="Заметки о масштабируемости и ограничениях")
 
 # === Модель уточняющих вопросов ===
 class ClarificationNeeded(BaseModel):
     needs_clarification: bool = Field(description="Требуются ли уточнения")
-    questions: List[str] = Field(description="Список уточняющих вопросов")
+    questions: list[str] = Field(description="Список уточняющих вопросов")
 
 # === Инициализация модели ===
-llm = ChatOpenAI(
-    model="deepseek-chat",
-    api_key=os.getenv("DEEPSEEK_API_KEY"),
-    base_url="https://api.deepseek.com",
-    temperature=0.4
-)
+llm = get_llm(0.4)
 
 # === Промпт для анализа требований и определения, нужны ли уточнения ===
 clarification_prompt = ChatPromptTemplate.from_messages([
-    ("system", """
-Ты — дотошный технический архитектор. Тебе даны функциональные требования к приложению.
-Твоя задача — определить, достаточно ли информации для подбора технологического стека.
-
-Обрати внимание на:
-- Потенциальную нагрузку (количество пользователей, частота запросов)
-- Требования к внешнему виду (дизайн, кастомизация интерфейса)
-- Необходимость масштабируемости
-- Интеграции с другими системами
-- Безопасность и данные
-- Платформа (веб, мобильное, десктоп)
-- Сроки и бюджет (если упоминаются)
-
-Если информации недостаточно — задай **1-3 конкретных вопроса** для уточнения.
-Если достаточно — верни пустой список вопросов.
-
-Формат ответа:
-{{
-  "needs_clarification": true/false,
-  "questions": ["Вопрос 1", "Вопрос 2"]
-}}
-"""),
+    ("system", clarification_prompt_str),
     ("human", "Требования к приложению:\n{requirements_json}"),
 ])
 
 # === Промпт для подбора стека ===
 stack_selection_prompt = ChatPromptTemplate.from_messages([
-    ("system", """
-Ты — технический архитектор с опытом в подборе технологических решений.
-На основе требований к приложению и дополнительной информации (если есть) предложи оптимальный технологический стек.
-
-Учитывай:
-- Простоту реализации для требуемой функциональности
-- Масштабируемость (если ожидается рост нагрузки)
-- Доступность разработчиков на выбранных технологиях
-- Стоимость хостинга и поддержки
-- Скорость разработки
-- Безопасность и надёжность
-
-Верни ТОЛЬКО ЧИСТЫЙ JSON в формате:
-{{
-  "language": "...",
-  "framework": "...",
-  "database": "...",
-  "frontend": "...",
-  "architecture": "...",
-  "hosting": "...",
-  "additional_tools": ["...", "..."],
-  "justification": "...",
-  "scalability_notes": "..."
-}}
-
-Без пояснений, без markdown — только валидный JSON.
-"""),
+    ("system", stack_selection_prompt_str),
     ("human", "Требования к приложению:\n{requirements_json}\n\nДополнительная информация:\n{additional_info}"),
 ])
-
-def extract_json_from_text(text: str) -> dict | None:
-    """Извлекает JSON из текста."""
-    text = re.sub(r"```(?:json)?\s*", "", text)
-    text = re.sub(r"```", "", text)
-    try:
-        start = text.find("{")
-        end = text.rfind("}")
-        if start != -1 and end != -1 and end > start:
-            json_str = text[start:end+1]
-            return json.loads(json_str)
-    except (json.JSONDecodeError, ValueError):
-        return None
-    return None
 
 def load_requirements_from_project(project_path: str) -> tuple[Requirements, dict] | None:
     """Загружает требования из папки проекта."""
