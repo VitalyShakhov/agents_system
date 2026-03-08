@@ -7,7 +7,7 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.messages import HumanMessage, AIMessage
 from pydantic import ValidationError
 from langchain_openai import ChatOpenAI
-from models import Requirements
+from models import Requirements, print_requirements
 from prompts import requirements_prompt_str
 from agent_utils import extract_json_from_text, get_llm, sanitize_filename
 
@@ -114,12 +114,7 @@ def main():
 
         # === Успешно получили требования ===
         print("\nФормализованные требования:")
-        print(f"- Цель: {req.goal}")
-        print("- Основные функции:")
-        for i, feat in enumerate(req.features, 1):
-            print(f"  {i}. {feat}")
-        print(f"- Аудитория: {req.audience}")
-        print(f"- Особые требования: {req.special_requirements}")
+        print_requirements(req)
 
         # === Сохранение ===
         print("\n💾 Сохранение проекта...")

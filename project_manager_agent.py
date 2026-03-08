@@ -8,8 +8,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 from langchain_openai import ChatOpenAI
 from models import Requirements, TechStackRecommendation as TechStack
-from prompts import task_generation_prompt_str
-from agent_utils import extract_json_from_text, get_llm
+from agent_utils import extract_json_from_text, get_llm, list_projects, get_project_path
 
 load_dotenv()
 
@@ -66,18 +65,6 @@ class AgentInterface:
 # === Инициализация модели ===
 llm = get_llm(0.5)
 
-# === Промпт для генерации задач ===
-task_generation_prompt = ChatPromptTemplate.from_messages([
-    ("system", task_generation_prompt_str),
-    ("human", """
-Требования к приложению:
-{requirements_json}
-
-Технологический стек:
-{tech_stack_json}
-"""),
-])
-
 def load_project_data(project_path: str) -> tuple[Requirements, TechStack, dict] | None:
     """Загружает требования и стек из папки проекта."""
     try:
@@ -133,18 +120,6 @@ def save_project_plan(project_path: str, plan: ProjectPlan):
     with open(metadata_file, "w", encoding="utf-8") as f:
         json.dump(metadata, f, ensure_ascii=False, indent=2)
 
-def list_projects() -> list[str]:
-    """Возвращает список папок проектов."""
-    projects_dir = "projects"
-    if not os.path.exists(projects_dir):
-        return []
-    
-    return sorted(
-        [os.path.join(projects_dir, d) for d in os.listdir(projects_dir) 
-         if os.path.isdir(os.path.join(projects_dir, d))],
-        reverse=True
-    )
-
 def print_task_summary(plan: ProjectPlan):
     """Выводит сводку по задачам."""
     print("\n" + "=" * 60)
@@ -181,6 +156,104 @@ def print_task_summary(plan: ProjectPlan):
             print(f"\n   ⚡ Приоритет {priority} ({len(tasks)} задач):")
             for task in tasks[:5]:  # Показываем первые 5
                 print(f"      • {task.id}: {task.title}")
+            if len(tasks) > 5:
+                print("      ...")
+
+def generate_tasks_by_role(requirements: Requirements, tech_stack: TechStack) -> dict:
+    """Генерирует задачи для каждой роли отдельно."""
+    
+    all_tasks = []
+    milestones = []
+    
+    # Определяем контекст для каждой роли
+    role_contexts = {
+        AgentRole.BACKEND_DEVELOPER: "Серверная логика, API, работа с базой данных, бизнес-логика",
+        AgentRole.FRONTEND_DEVELOPER: "Пользовательский интерфейс, визуализация, взаимодействие с пользователем",
+        AgentRole.TESTER: "Тестирование функционала, поиск багов, проверка критериев приемки",
+        AgentRole.DEVOPS: "Развёртывание, CI/CD, настройка серверов, мониторинг",
+        AgentRole.DATABASE_ADMIN: "Проектирование базы данных, оптимизация запросов, миграции",
+        AgentRole.SECURITY_SPECIALIST: "Проверка безопасности, защита от уязвимостей, аутентификация",
+        # AgentRole.FULLSTACK_DEVELOPER: "Комплексная разработка фронтенда и бэкенда",
+    }
+    
+    # Форматируем данные для промпта
+    requirements_json = json.dumps(requirements.model_dump(), ensure_ascii=False, indent=2)
+    tech_stack_json = json.dumps(tech_stack.model_dump(), ensure_ascii=False, indent=2)
+
+    # Генерируем задачи для каждой роли
+    for role, context in role_contexts.items():
+        print(f"\n🔄 Генерация задач для {role.value}...")
+      
+        role_prefix = role.value.upper().replace('_', '-')
+        role_prompt_str = f"""
+Ты — технический руководитель. Создай 0-10 конкретных задач для роли: {role.value}
+Задач для роли может не быть, это нормально. Задач необязательно должно быть максимальное количество.
+
+Контекст: {context}
+
+Правила:
+- Каждая задача должна быть выполнима за 1-8 часов
+- Укажи зависимости от других задач (если есть)
+- Добавь критерии приемки (2-3 пункта)
+- Используй префикс {role_prefix} для ID задач (например: {role_prefix}-001)
+- Укажи реалистичную оценку времени в часах
+
+Формат ответа — ТОЛЬКО ЧИСТЫЙ JSON:
+{{{{"tasks": [
+  {{{{
+    "id": "{role_prefix}-001",
+    "title": "Краткое название задачи",
+    "description": "Подробное описание задачи",
+    "role": "{role.value}",
+    "priority": 1,
+    "estimated_hours": 4,
+    "dependencies": [],
+    "acceptance_criteria": ["Критерий 1", "Критерий 2"],
+    "tags": ["тег1", "тег2"]
+  }}}}
+]}}}}
+""" 
+
+        role_prompt = ChatPromptTemplate.from_messages([
+    ("system", role_prompt_str),
+    ("human", """
+Требования к приложению:
+{requirements_json}
+
+Технологический стек:
+{tech_stack_json}
+"""),
+])
+        
+        try:
+            # Отправляем запрос
+            response = (role_prompt | llm).invoke({"requirements_json": requirements_json, "tech_stack_json": tech_stack_json})
+            
+            # Извлекаем JSON
+            json_data = extract_json_from_text(response.content)
+            
+            if json_data and ("tasks" in json_data):
+                role_tasks = json_data["tasks"]
+                
+                # Добавляем задачи в общий список
+                for task in role_tasks:
+                    all_tasks.append(task)
+                
+                print(f"✅ Сгенерировано {len(role_tasks)} задач")
+            else:
+                print(f"⚠️ Не удалось сгенерировать задачи для {role.value}")
+                
+        except Exception as e:
+            print(f"❌ Ошибка для {role.value}: {e}")
+            continue
+    
+    # Формируем итоговый результат
+    result = {
+        "tasks": all_tasks,
+        "milestones": milestones
+    }
+
+    return result
 
 def main():
     print("👨‍💼 Агент-тимлид: Планирование проекта")
@@ -189,31 +262,11 @@ def main():
     # === Шаг 1: Выбор проекта ===
     print("\n📂 Доступные проекты:")
     projects = list_projects()
-    
     if not projects:
         print("❌ Нет сохранённых проектов. Сначала запустите requirements_agent.py и stack_agent.py")
         return
     
-    for i, project_path in enumerate(projects, 1):
-        metadata_file = os.path.join(project_path, "metadata.json")
-        try:
-            with open(metadata_file, "r", encoding="utf-8") as f:
-                metadata = json.load(f)
-                name = metadata.get("project_name", os.path.basename(project_path))
-                created = metadata.get("created_at", "")[:16]
-                print(f"{i}. [{created}] {name}")
-        except:
-            print(f"{i}. {os.path.basename(project_path)}")
-    
-    try:
-        choice = int(input(f"\nВыберите проект (1-{len(projects)}): "))
-        if 1 <= choice <= len(projects):
-            project_path = projects[choice - 1]
-        else:
-            project_path = input("Введите путь к папке проекта: ").strip()
-    except (ValueError, IndexError):
-        project_path = input("Введите путь к папке проекта: ").strip()
-    
+    project_path = get_project_path(projects)
     if not os.path.exists(project_path):
         print(f"❌ Папка не найдена: {project_path}")
         return
@@ -236,42 +289,12 @@ def main():
     # === Шаг 3: Генерация задач ===
     print("\n📝 Генерация плана работ...")
     
-    requirements_json = json.dumps(requirements.model_dump(), ensure_ascii=False, indent=2)
-    tech_stack_json = json.dumps(tech_stack.model_dump(), ensure_ascii=False, indent=2)
-    
-    available_roles = ", ".join([role.value for role in AgentRole])
-    
     try:
-        # Попытка структурированного вывода
-        chain = task_generation_prompt | llm.with_structured_output(ProjectPlan)
-        raw_plan = chain.invoke({
-            "requirements_json": requirements_json,
-            "tech_stack_json": tech_stack_json,
-            "available_roles": available_roles
-        })
-        
-        if isinstance(raw_plan, dict):
-            # Если вернулся словарь, преобразуем в ProjectPlan
-            plan_dict = raw_plan
-        else:
-            # Если уже ProjectPlan
-            plan_dict = raw_plan.model_dump()
-        
+        plan_dict = generate_tasks_by_role(requirements, tech_stack)         
     except Exception as e:
-        print(f"⚠️ Fallback к текстовому выводу: {e}")
-        raw_response = (task_generation_prompt | llm).invoke({
-            "requirements_json": requirements_json,
-            "tech_stack_json": tech_stack_json,
-            "available_roles": available_roles
-        })
+        print(f"❌ Ошибка при генерации задач: {e}")
+        return
         
-        json_data = extract_json_from_text(raw_response.content)
-        if not json_data:
-            print("❌ Не удалось извлечь план работ.")
-            return
-        
-        plan_dict = json_data
-    
     # Создать план работ
     try:
         # Подсчитать статистику
@@ -305,26 +328,23 @@ def main():
     print("\n" + "=" * 60)
     print("📤 Экспорт задач по ролям")
     print("=" * 60)
+
+    roles_dir = os.path.join(project_path, "tasks_by_role")
+    os.makedirs(roles_dir, exist_ok=True)
     
-    export_choice = input("\nХотите экспортировать задачи по отдельным файлам для каждой роли? (да/нет): ").strip().lower()
+    for role in AgentRole:
+        role_tasks = [task for task in project_plan.tasks if task.role == role]
+        if role_tasks:
+            role_file = os.path.join(roles_dir, f"{role.value}.json")
+            with open(role_file, "w", encoding="utf-8") as f:
+                json.dump({
+                    "role": role.value,
+                    "tasks_count": len(role_tasks),
+                    "tasks": [task.model_dump() for task in role_tasks]
+                }, f, ensure_ascii=False, indent=2)
+            print(f"   ✅ {role.value}: {len(role_tasks)} задач → {role_file}")
     
-    if export_choice in ["да", "yes", "y", ""]:
-        roles_dir = os.path.join(project_path, "tasks_by_role")
-        os.makedirs(roles_dir, exist_ok=True)
-        
-        for role in AgentRole:
-            role_tasks = [task for task in project_plan.tasks if task.role == role]
-            if role_tasks:
-                role_file = os.path.join(roles_dir, f"{role.value}.json")
-                with open(role_file, "w", encoding="utf-8") as f:
-                    json.dump({
-                        "role": role.value,
-                        "tasks_count": len(role_tasks),
-                        "tasks": [task.model_dump() for task in role_tasks]
-                    }, f, ensure_ascii=False, indent=2)
-                print(f"   ✅ {role.value}: {len(role_tasks)} задач → {role_file}")
-        
-        print(f"\n📁 Задачи экспортированы в: {roles_dir}")
+    print(f"\n📁 Задачи экспортированы в: {roles_dir}")
     
     print("\n✨ Готово! План работ создан.")
     print(f"📁 Папка проекта: {project_path}")

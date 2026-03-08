@@ -19,3 +19,12 @@ class TechStackRecommendation(BaseModel):
     additional_tools: list[str] = Field(description="Дополнительные инструменты (тестирование, сборка и т.д.)")
     justification: str = Field(description="Обоснование выбора стека")
     scalability_notes: str = Field(description="Заметки о масштабируемости и ограничениях")
+
+def print_requirements(requirements: Requirements):
+    print(f"- Цель: {requirements.goal}")
+    print("- Основные функции:")
+    for i, feat in enumerate(requirements.features, 1):
+        print(f"  {i}. {feat}")
+    print(f"- Аудитория: {requirements.audience}")
+    print(f"- Особые требования: {requirements.special_requirements}")    
+

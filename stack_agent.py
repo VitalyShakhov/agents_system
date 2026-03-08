@@ -7,9 +7,9 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.messages import HumanMessage, AIMessage
 from pydantic import BaseModel, Field, ValidationError
 from langchain_openai import ChatOpenAI
-from models import Requirements, TechStackRecommendation
+from models import Requirements, TechStackRecommendation, print_requirements
 from prompts import clarification_prompt_str, stack_selection_prompt_str
-from agent_utils import extract_json_from_text, get_llm
+from agent_utils import extract_json_from_text, get_llm, list_projects, get_project_path
 
 load_dotenv()
 
@@ -20,18 +20,6 @@ class ClarificationNeeded(BaseModel):
 
 # === Инициализация модели ===
 llm = get_llm(0.4)
-
-# === Промпт для анализа требований и определения, нужны ли уточнения ===
-clarification_prompt = ChatPromptTemplate.from_messages([
-    ("system", clarification_prompt_str),
-    ("human", "Требования к приложению:\n{requirements_json}"),
-])
-
-# === Промпт для подбора стека ===
-stack_selection_prompt = ChatPromptTemplate.from_messages([
-    ("system", stack_selection_prompt_str),
-    ("human", "Требования к приложению:\n{requirements_json}\n\nДополнительная информация:\n{additional_info}"),
-])
 
 def load_requirements_from_project(project_path: str) -> tuple[Requirements, dict] | None:
     """Загружает требования из папки проекта."""
@@ -75,18 +63,6 @@ def save_recommendation_to_project(project_path: str, rec: TechStackRecommendati
     
     print(f"\n📁 Рекомендации сохранены в: {stack_file}")
 
-def list_projects() -> list[str]:
-    """Возвращает список папок проектов."""
-    projects_dir = "projects"
-    if not os.path.exists(projects_dir):
-        return []
-    
-    return sorted(
-        [os.path.join(projects_dir, d) for d in os.listdir(projects_dir) 
-         if os.path.isdir(os.path.join(projects_dir, d))],
-        reverse=True
-    )
-
 def main():
     print("🛠️  Агент подбора технологического стека")
     print("=" * 50)
@@ -94,33 +70,11 @@ def main():
     # === Шаг 1: Выбор проекта ===
     print("\n📂 Доступные проекты:")
     projects = list_projects()
-    
     if not projects:
         print("❌ Нет сохранённых проектов. Сначала запустите requirements_agent.py")
         return
     
-    for i, project_path in enumerate(projects, 1):
-        metadata_file = os.path.join(project_path, "metadata.json")
-        try:
-            with open(metadata_file, "r", encoding="utf-8") as f:
-                metadata = json.load(f)
-                name = metadata.get("project_name", os.path.basename(project_path))
-                created = metadata.get("created_at", "")[:16]
-                print(f"{i}. [{created}] {name}")
-        except:
-            print(f"{i}. {os.path.basename(project_path)}")
-    
-    print(f"\n{i+1}. Ввести путь вручную")
-    
-    try:
-        choice = int(input(f"\nВыберите проект (1-{len(projects)}): "))
-        if 1 <= choice <= len(projects):
-            project_path = projects[choice - 1]
-        else:
-            project_path = input("Введите путь к папке проекта: ").strip()
-    except (ValueError, IndexError):
-        project_path = input("Введите путь к папке проекта: ").strip()
-    
+    project_path = get_project_path(projects)
     if not os.path.exists(project_path):
         print(f"❌ Папка не найдена: {project_path}")
         return
@@ -132,19 +86,21 @@ def main():
         return
     
     requirements, metadata = result
-    
     print("\n✅ Требования загружены:")
-    print(f"- Цель: {requirements.goal}")
-    print("- Функции:")
-    for feat in requirements.features:
-        print(f"  • {feat}")
-    print(f"- Аудитория: {requirements.audience}")
-    print(f"- Особые требования: {requirements.special_requirements}")
+    print_requirements(requirements)
     
     # === Шаг 3: Определение, нужны ли уточнения ===
     print("\n🔍 Анализ требований...")
-    
     requirements_json = json.dumps(requirements.model_dump(), ensure_ascii=False, indent=2)
+    
+    # === Промпт для анализа требований и определения, нужны ли уточнения ===
+    requirements_str = "Требования к приложению:\n{requirements_json}" 
+    clarification_prompt = ChatPromptTemplate.from_messages([
+        ("system", clarification_prompt_str),
+        ("human", requirements_str),
+    ])
+    print("clarification_prompt.messages")
+    print(clarification_prompt.messages)
     
     try:
         # Попытка получить структурированный ответ
@@ -187,15 +143,21 @@ def main():
     # === Шаг 4: Подбор стека ===
     print("\n⚙️  Подбираю оптимальный технологический стек...")
     
+    print("STACK_SELECTION_STR")
+    print(stack_selection_prompt_str)
+
+    # === Промпт для подбора стека ===
+    stack_selection_prompt = ChatPromptTemplate.from_messages([
+        ("system", stack_selection_prompt_str),
+        ("human", "Требования к приложению:\n{requirements_json}\n\nДополнительная информация:\n{additional_info}"),
+    ])
+
     try:
         stack_chain = stack_selection_prompt | llm.with_structured_output(TechStackRecommendation)
         recommendation = stack_chain.invoke({
             "requirements_json": requirements_json,
             "additional_info": additional_info
         })
-        
-        # if not isinstance(recommendation, TechStackRecommendation):
-        #     raise ValueError("Некорректный формат рекомендации")
     except Exception as e:
         print(f"⚠️ Fallback к текстовому выводу: {e}")
         raw_response = (stack_selection_prompt | llm).invoke({
